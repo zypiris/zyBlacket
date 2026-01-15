@@ -1,3 +1,5 @@
+/* NOTE THAT THIS SCRIPT REQUIRES PANEL ACCESS TO WORK PROPERLY */
+
 (async () => {
     let blookName = prompt("Enter the blook name to analyze:");
     if (!blookName) return console.log("No blook entered.");
