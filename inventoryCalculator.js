@@ -1,3 +1,5 @@
+/* NOTE THAT THIS SCRIPT REQUIRES PANEL ACCESS TO WORK PROPERLY */
+
 (async () => {
   /* ================= CONFIG ================= */
   const SALES_TARGET = 50;
