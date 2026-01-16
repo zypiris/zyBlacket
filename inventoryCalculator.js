@@ -2,27 +2,24 @@
 
 (async () => {
   /* ================= CONFIG ================= */
-  const SALES_TARGET = 75;
+  const TARGET_PRICES = 25;      // <<< HUGE SPEED WIN
   const MAX_PAGES = 4;
   const MAX_RETRIES = 3;
-  const REQUEST_DELAY = 150;
-  const RETRY_DELAY = 500;
+  const REQUEST_DELAY = 120;
+  const RETRY_DELAY = 400;
   const CONCURRENCY = 4;
   /* ========================================== */
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const priceCache = new Map();
 
   const username = prompt("Enter username to calculate inventory value:");
-  if (!username) return console.log("No username entered.");
+  if (!username) return;
 
-  console.log("Fetching user inventory…");
-
-  const userRes = await fetch(`/worker2/user/${encodeURIComponent(username)}`);
-  const userData = await userRes.json();
-  if (userData.error) return console.error("Failed to fetch user.");
+  const userData = await (await fetch(`/worker2/user/${encodeURIComponent(username)}`)).json();
+  if (userData.error) return console.error("User not found.");
 
   const inventory = userData.user.blooks;
-
   const meta = await (await fetch("/data/index.json")).json();
   const blookMeta = meta.blooks;
 
@@ -34,16 +31,16 @@
   };
 
   async function getAveragePrice(blookName) {
+    if (priceCache.has(blookName)) return priceCache.get(blookName);
+
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const cutoff = Date.now() - 1000 * 60 * 60 * 24 * 90;
         let prices = [];
         let page = 1;
+        let lastMedian = null;
 
-        while (
-          prices.length < SALES_TARGET &&
-          page <= MAX_PAGES
-        ) {
+        while (page <= MAX_PAGES && prices.length < TARGET_PRICES) {
           const res = await fetch(
             `/worker/staff/audit/${page}` +
             `?action=${encodeURIComponent(JSON.stringify(["bazaar","bought"]))}` +
@@ -55,21 +52,28 @@
           if (!data.audit?.length) break;
 
           for (const entry of data.audit) {
-            if (prices.length >= SALES_TARGET) break;
             if (entry.date < cutoff) break;
 
             const match = entry.reason.match(/for\s+(\d+)\s+tokens/i);
             if (match) prices.push(+match[1]);
           }
 
-          if (page >= data.pages) break;
+          if (page >= 2 && prices.length < 5) break;
+
+          if (prices.length >= 10) {
+            const sorted = [...prices].sort((a,b)=>a-b);
+            const median = sorted[Math.floor(sorted.length / 2)];
+            if (median === lastMedian) break;
+            lastMedian = median;
+          }
+
           page++;
           await sleep(REQUEST_DELAY);
         }
 
         if (!prices.length) throw "No data";
 
-        prices.sort((a, b) => a - b);
+        prices.sort((a,b)=>a-b);
 
         const q1 = prices[Math.floor(prices.length * 0.25)];
         const q3 = prices[Math.floor(prices.length * 0.75)];
@@ -80,18 +84,20 @@
         const clean = prices.filter(p => p >= low && p <= high);
         const base = clean.length ? clean : prices;
 
-        return Math.round(
-          base.reduce((a, b) => a + b, 0) / base.length
-        );
+        const avg = Math.round(base.reduce((a,b)=>a+b,0) / base.length);
+        priceCache.set(blookName, avg);
+        return avg;
 
       } catch {
         await sleep(RETRY_DELAY);
       }
     }
+
+    priceCache.set(blookName, null);
     return null;
   }
 
-  const entries = Object.entries(inventory).filter(([, v]) => v > 0);
+  const entries = Object.entries(inventory).filter(([,v]) => v > 0);
   let results = [];
   let failed = [];
 
@@ -117,7 +123,7 @@
         totalValue: unit * amount
       });
 
-      console.log(`✔ ${blook} priced`);
+      console.log(`✔ ${blook}`);
     }
   }
 
@@ -126,7 +132,7 @@
     Array.from({ length: CONCURRENCY }, () => worker(queue))
   );
 
-  const total = results.reduce((sum, r) => sum + r.totalValue, 0);
+  const total = results.reduce((s,r)=>s+r.totalValue,0);
 
   console.table(results);
   console.log(
