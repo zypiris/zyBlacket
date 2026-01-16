@@ -2,10 +2,12 @@
 
 (async () => {
   /* ================= CONFIG ================= */
-  const SALES_TARGET = 50;
-  const MAX_RETRIES = 5;
-  const REQUEST_DELAY = 300;
-  const RETRY_DELAY = 800;
+  const SALES_TARGET = 75;
+  const MAX_PAGES = 4;
+  const MAX_RETRIES = 3;
+  const REQUEST_DELAY = 150;
+  const RETRY_DELAY = 500;
+  const CONCURRENCY = 4;
   /* ========================================== */
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -17,21 +19,13 @@
 
   const userRes = await fetch(`/worker2/user/${encodeURIComponent(username)}`);
   const userData = await userRes.json();
-
-  if (userData.error) {
-    console.error("Failed to fetch user:", userData.reason);
-    return;
-  }
+  if (userData.error) return console.error("Failed to fetch user.");
 
   const inventory = userData.user.blooks;
-  console.log(`Loaded inventory for ${userData.user.username}`);
 
-  /* ===== Load blook metadata ===== */
-  const metaRes = await fetch("/data/index.json");
-  const meta = await metaRes.json();
+  const meta = await (await fetch("/data/index.json")).json();
   const blookMeta = meta.blooks;
 
-  /* ===== Fixed rarity pricing ===== */
   const RARITY_PRICES = {
     Uncommon: 5,
     Rare: 20,
@@ -39,39 +33,33 @@
     Legendary: 200
   };
 
-  async function getAveragePriceWithRetry(blookName) {
+  async function getAveragePrice(blookName) {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const now = new Date();
-        const cutoff = new Date();
-        cutoff.setMonth(now.getMonth() - 3);
-
-        let page = 1;
+        const cutoff = Date.now() - 1000 * 60 * 60 * 24 * 90;
         let prices = [];
+        let page = 1;
 
-        while (prices.length < SALES_TARGET) {
-          const url =
+        while (
+          prices.length < SALES_TARGET &&
+          page <= MAX_PAGES
+        ) {
+          const res = await fetch(
             `/worker/staff/audit/${page}` +
             `?action=${encodeURIComponent(JSON.stringify(["bazaar","bought"]))}` +
-            `&user=undefined` +
-            `&search=${encodeURIComponent(`"${blookName}"`)}`;
-
-          const res = await fetch(url);
+            `&user=undefined&search=${encodeURIComponent(`"${blookName}"`)}`
+          );
           if (!res.ok) break;
 
           const data = await res.json();
-          if (!data.audit || !data.audit.length) break;
+          if (!data.audit?.length) break;
 
           for (const entry of data.audit) {
             if (prices.length >= SALES_TARGET) break;
+            if (entry.date < cutoff) break;
 
             const match = entry.reason.match(/for\s+(\d+)\s+tokens/i);
-            if (!match) continue;
-
-            const date = new Date(entry.date);
-            if (date < cutoff) continue;
-
-            prices.push(Number(match[1]));
+            if (match) prices.push(+match[1]);
           }
 
           if (page >= data.pages) break;
@@ -79,11 +67,10 @@
           await sleep(REQUEST_DELAY);
         }
 
-        if (!prices.length) throw "No sales found";
+        if (!prices.length) throw "No data";
 
         prices.sort((a, b) => a - b);
 
-        // Outlier removal (IQR)
         const q1 = prices[Math.floor(prices.length * 0.25)];
         const q3 = prices[Math.floor(prices.length * 0.75)];
         const iqr = q3 - q1;
@@ -91,60 +78,62 @@
         const high = q3 + 1.5 * iqr;
 
         const clean = prices.filter(p => p >= low && p <= high);
-        return Math.round(clean.reduce((a, b) => a + b, 0) / clean.length);
+        const base = clean.length ? clean : prices;
 
-      } catch (e) {
-        console.warn(`Retry ${attempt}/${MAX_RETRIES} for ${blookName}`);
+        return Math.round(
+          base.reduce((a, b) => a + b, 0) / base.length
+        );
+
+      } catch {
         await sleep(RETRY_DELAY);
       }
     }
     return null;
   }
 
-  let totalValue = 0;
+  const entries = Object.entries(inventory).filter(([, v]) => v > 0);
   let results = [];
   let failed = [];
 
-  for (const [blook, amount] of Object.entries(inventory)) {
-    if (!amount) continue;
+  async function worker(queue) {
+    while (queue.length) {
+      const [blook, amount] = queue.shift();
+      const info = blookMeta[blook];
+      if (!info) { failed.push(blook); continue; }
 
-    const info = blookMeta[blook];
-    if (!info) {
-      failed.push(blook);
-      continue;
-    }
-
-    let unitPrice;
-    if (RARITY_PRICES[info.rarity]) {
-      unitPrice = RARITY_PRICES[info.rarity];
-    } else {
-      unitPrice = await getAveragePriceWithRetry(blook);
-      if (unitPrice === null) {
-        failed.push(blook);
-        continue;
+      let unit;
+      if (RARITY_PRICES[info.rarity]) {
+        unit = RARITY_PRICES[info.rarity];
+      } else {
+        unit = await getAveragePrice(blook);
+        if (unit === null) { failed.push(blook); continue; }
       }
+
+      results.push({
+        blook,
+        rarity: info.rarity,
+        amount,
+        unitPrice: unit,
+        totalValue: unit * amount
+      });
+
+      console.log(`✔ ${blook} priced`);
     }
-
-    const value = unitPrice * amount;
-    totalValue += value;
-
-    results.push({
-      blook,
-      rarity: info.rarity,
-      amount,
-      unitPrice,
-      totalValue: value
-    });
   }
+
+  const queue = [...entries];
+  await Promise.all(
+    Array.from({ length: CONCURRENCY }, () => worker(queue))
+  );
+
+  const total = results.reduce((sum, r) => sum + r.totalValue, 0);
 
   console.table(results);
   console.log(
     `TOTAL INVENTORY VALUE for ${userData.user.username}:`,
-    totalValue.toLocaleString(),
+    total.toLocaleString(),
     "tokens"
   );
 
-  if (failed.length) {
-    console.warn("Failed to price these blooks:", failed);
-  }
+  if (failed.length) console.warn("Failed:", failed);
 })();
