@@ -1,92 +1,103 @@
-/* NOTE THAT THIS SCRIPT REQUIRES PANEL ACCESS TO WORK PROPERLY */
+/* REQUIRES PANEL ACCESS */
 
 (async () => {
-    let blookName = prompt("Enter the blook name to analyze:");
-    if (!blookName) return console.log("No blook entered.");
+    const INPUT = prompt("Enter the blook name to analyze:");
+    if (!INPUT) return console.log("No blook entered.");
 
-    // Automatically add quotes for exact matching
-    blookName = `"${blookName}"`;
+    const blookName = `"${INPUT}"`;
+    const TARGET_MATCHES = 100;
+    const DELAY_MS = 120;
 
-    const now = new Date();
-    const threeMonthsAgo = new Date(now);
-    threeMonthsAgo.setMonth(now.getMonth() - 3); // 3-month cutoff
+    const now = Date.now();
+    const threeMonthsAgo = now - (1000 * 60 * 60 * 24 * 30 * 3);
 
     let page = 1;
     let collected = [];
-    const CAP = 250;
 
-    console.log("Collector started for blook:", blookName);
+    console.log("Collector started for:", blookName);
 
-    while (collected.length < CAP) {
-        const url = `/worker/staff/audit/${page}?action=${encodeURIComponent(JSON.stringify(["bazaar","bought"]))}&user=undefined&search=${encodeURIComponent(blookName)}`;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    while (collected.length < TARGET_MATCHES) {
+        const url =
+            `/worker/staff/audit/${page}` +
+            `?action=${encodeURIComponent(JSON.stringify(["bazaar","bought"]))}` +
+            `&user=undefined&search=${encodeURIComponent(blookName)}`;
+
         const res = await fetch(url);
         if (!res.ok) {
-            console.error("Failed to fetch page", page);
+            console.error("Failed page", page);
             break;
         }
 
         const data = await res.json();
         const entries = data.audit || [];
+        if (!entries.length) break;
 
-        if (entries.length === 0) break;
+        let stopByDate = false;
 
         for (const entry of entries) {
-            if (collected.length >= CAP) break;
+            const entryTime = new Date(entry.date).getTime();
+
+            if (entryTime < threeMonthsAgo) {
+                stopByDate = true;
+                break;
+            }
 
             const reason = entry.reason;
-            const regex = /bought\s+"(.+?)"\s+from\s+(.+?)\s+\((\d+)\)\s+for\s+(\d+)\s+tokens/i;
-            const match = reason.match(regex);
-            if (match && `"${match[1]}"` === blookName) {  // exact match using quotes
-                const date = new Date(entry.date);
-                if (date >= threeMonthsAgo) {
-                    collected.push({
-                        blook: match[1],
-                        buyer: entry.user.username,
-                        seller: match[2],
-                        sellerId: match[3],
-                        price: Number(match[4]),
-                        date
-                    });
-                }
-            }
+            if (!reason.includes(blookName)) continue;
+
+            const match = reason.match(
+                /bought\s+"(.+?)"\s+from\s+(.+?)\s+\((\d+)\)\s+for\s+(\d+)\s+tokens/i
+            );
+            if (!match) continue;
+
+            collected.push({
+                blook: match[1],
+                buyer: entry.user.username,
+                seller: match[2],
+                sellerId: match[3],
+                price: Number(match[4]),
+                date: new Date(entry.date)
+            });
+
+            if (collected.length >= TARGET_MATCHES) break;
         }
 
-        if (page >= data.pages) break;
+        if (stopByDate || page >= data.pages) break;
+
         page++;
+        await sleep(DELAY_MS); // anti-spam delay
     }
 
-    if (collected.length === 0) {
-        console.log(`No sales found for blook ${blookName} in the last 3 months.`);
+    if (!collected.length) {
+        console.log(`No sales found for ${blookName} in the last 3 months.`);
         return;
     }
 
-    // Sort prices
+    // ---- ANALYSIS ----
     const prices = collected.map(s => s.price).sort((a,b)=>a-b);
 
-    // Average including all sales
-    const totalPrice = prices.reduce((sum, p) => sum + p, 0);
-    const avgPrice = totalPrice / prices.length;
+    const avg =
+        prices.reduce((a,b)=>a+b,0) / prices.length;
 
-    // Outlier detection (IQR)
     const q1 = prices[Math.floor(prices.length * 0.25)];
     const q3 = prices[Math.floor(prices.length * 0.75)];
     const iqr = q3 - q1;
-    const lower = q1 - 1.5*iqr;
-    const upper = q3 + 1.5*iqr;
+    const lower = q1 - 1.5 * iqr;
+    const upper = q3 + 1.5 * iqr;
+
     const outliers = collected.filter(s => s.price < lower || s.price > upper);
-    const nonOutliers = collected.filter(s => s.price >= lower && s.price <= upper);
+    const clean = collected.filter(s => s.price >= lower && s.price <= upper);
+    const cleanAvg =
+        clean.reduce((a,b)=>a+b.price,0) / clean.length;
 
-    // Average excluding outliers
-    const cleanTotal = nonOutliers.reduce((sum, s) => sum + s.price, 0);
-    const cleanAvg = nonOutliers.length > 0 ? cleanTotal / nonOutliers.length : 0;
+    console.log(`Collected ${collected.length} sales`);
+    console.log("Average price (all):", avg.toFixed(2));
+    console.log("Average price (no outliers):", cleanAvg.toFixed(2));
 
-    console.log(`Collected ${collected.length} sales of ${blookName} in the last 3 months (capped at ${CAP}).`);
-    console.log("Average price (all sales):", avgPrice.toFixed(2));
-    console.log("Average price (excluding outliers):", cleanAvg.toFixed(2));
-    console.log("Total tokens:", totalPrice);
-
-    if (outliers.length > 0) {
-        console.log(`Found ${outliers.length} outlier(s):`);
+    if (outliers.length) {
+        console.log("Outliers:");
         console.table(outliers);
     } else {
         console.log("No outliers found.");
