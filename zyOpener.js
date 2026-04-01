@@ -1,4 +1,4 @@
-const DELAY = 500;
+const DELAY = 450;
 const LOG_BATCH = 25;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
