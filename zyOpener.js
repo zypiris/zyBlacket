@@ -1,8 +1,5 @@
 const DELAY = 450;
-const LOG_BATCH = 25;
-
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-
 const openPack = pack =>
   new Promise((resolve, reject) => {
     blacket.requests.post("/worker3/open", { pack }, data => {
@@ -10,29 +7,21 @@ const openPack = pack =>
       else resolve(data.blook);
     });
   });
-
 const main = async (pack, amount) => {
   const results = [];
-  const logBuffer = [];
   for (let i = 0; i < amount; i++) {
     try {
       const blook = await openPack(pack);
       results.push(blook);
-      logBuffer.push(`[${i + 1}/${amount}] ${blook}`);
+      console.log(`[${i + 1}/${amount}] ${blook}`);
     } catch (err) {
       console.warn("Rate limited / error — backing off");
       await sleep(DELAY);
       i--;
       continue;
     }
-    if (logBuffer.length >= LOG_BATCH) {
-      console.log(logBuffer.join("\n"));
-      logBuffer.length = 0;
-    }
     await sleep(DELAY);
   }
-  if (logBuffer.length) console.log(logBuffer.join("\n"));
-
   console.log("%c\nPACK SUMMARY", "font-size:3em;font-weight:bold");
   const counts = {};
   for (const b of results) counts[b] = (counts[b] || 0) + 1;
@@ -50,7 +39,6 @@ const main = async (pack, amount) => {
       console.log(`%c${blook} x${counts[blook]}`, `color:${color};font-size:1.5em`);
     });
 };
-
 (async () => {
   const packs = Object.keys(blacket.packs);
   let pack;
