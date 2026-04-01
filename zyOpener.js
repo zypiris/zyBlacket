@@ -1,4 +1,4 @@
-const DELAY = 450;
+const DELAY = 425;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const openPack = pack =>
   new Promise((resolve, reject) => {
