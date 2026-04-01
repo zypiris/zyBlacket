@@ -2,8 +2,8 @@
 // CONFIG
 // --------------------
 let delay = 420;          // starting delay (ms)
-const MIN_DELAY = 390;
-const MAX_DELAY = 410;
+const MIN_DELAY = 405;
+const MAX_DELAY = 420;
 const LOG_BATCH = 10;     // log every X packs
 
 // --------------------
